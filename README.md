@@ -1,6 +1,6 @@
 # AWS Incident Response
 
-Scripts and playbooks for AWS security incident response, built while working through the [AWS Security Specialty (SCS-C02)](https://aws.amazon.com/certification/certified-security-specialty/) course.
+Scripts and playbooks for AWS security incident response.
 
 Each directory is a self-contained runbook: a script that automates the response, a write-up explaining what it does and why, and the AWS services involved.
 
