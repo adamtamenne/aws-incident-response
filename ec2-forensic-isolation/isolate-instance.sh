@@ -3,11 +3,14 @@
 # EC2 Forensic Isolation Script
 # =============================================================================
 # When an EC2 instance is suspected compromised, this script:
-#   1. Tags the instance as compromised (preserves evidence chain)
-#   2. Snapshots all attached EBS volumes (evidence preservation)
-#   3. Creates a forensic security group allowing only SSH from your IP
-#   4. Swaps the instance's security groups to the forensic one (isolation)
-#   5. Enables termination protection (prevent evidence destruction)
+#   1. Verifies the instance and captures metadata
+#   2. Tags the instance as compromised (preserves evidence chain)
+#   3. Detaches the IAM role (stops API access from the instance)
+#   4. Snapshots all attached EBS volumes (evidence preservation)
+#   5. Creates a forensic security group allowing only SSH from your IP
+#   6. Swaps the instance's security groups to the forensic one (isolation)
+#   7. Enables termination protection (prevent evidence destruction)
+#   8. Outputs a JSON forensic report
 #
 # Usage: ./isolate-instance.sh <instance-id> [--forensic-ip <your-ip>]
 # =============================================================================
@@ -55,9 +58,9 @@ echo "[*] Forensic IP:  $FORENSIC_IP"
 echo "[*] Timestamp:    $TIMESTAMP"
 echo "============================================"
 
-# --- Step 1: Verify instance exists and get its VPC ---
+# --- Step 1: Verify instance exists and capture metadata ---
 echo ""
-echo "[1/5] Verifying instance..."
+echo "[1/8] Verifying instance and capturing metadata..."
 
 INSTANCE_INFO=$(aws ec2 describe-instances \
   --instance-ids "$INSTANCE_ID" \
@@ -72,6 +75,14 @@ echo "      VPC:    $VPC_ID"
 echo "      Subnet: $SUBNET_ID"
 echo "      State:  $STATE"
 
+# Capture full metadata before any changes
+echo ""
+echo "      Instance metadata:"
+aws ec2 describe-instances \
+  --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].{PublicIp:PublicIpAddress,PrivateIp:PrivateIpAddress,KeyName:KeyName,Profile:IamInstanceProfile.Arn,LaunchTime:LaunchTime}' \
+  --output table
+
 if [ "$STATE" == "terminated" ]; then
   echo "[!] Instance is terminated. Nothing to isolate."
   exit 1
@@ -79,7 +90,7 @@ fi
 
 # --- Step 2: Tag the instance ---
 echo ""
-echo "[2/5] Tagging instance as compromised..."
+echo "[2/8] Tagging instance as compromised..."
 
 aws ec2 create-tags \
   --resources "$INSTANCE_ID" \
@@ -91,15 +102,36 @@ aws ec2 create-tags \
 
 echo "      Tagged with SecurityStatus=Compromised"
 
-# --- Step 3: Snapshot all attached EBS volumes ---
+# --- Step 3: Detach IAM role ---
 echo ""
-echo "[3/5] Snapshotting attached EBS volumes..."
+echo "[3/8] Checking for attached IAM role..."
+
+INSTANCE_PROFILE=$(aws ec2 describe-instances \
+  --instance-ids "$INSTANCE_ID" \
+  --query 'Reservations[0].Instances[0].IamInstanceProfile.Arn' \
+  --output text)
+
+if [ "$INSTANCE_PROFILE" != "None" ] && [ "$INSTANCE_PROFILE" != "null" ]; then
+  ASSOC_ID=$(aws ec2 describe-iam-instance-profile-associations \
+    --filters "Name=instance-id,Values=$INSTANCE_ID" \
+    --query 'IamInstanceProfileAssociations[0].AssociationId' \
+    --output text)
+  aws ec2 disassociate-iam-instance-profile --association-id "$ASSOC_ID"
+  echo "      Detached IAM role: $INSTANCE_PROFILE"
+else
+  echo "      No IAM role attached"
+fi
+
+# --- Step 4: Snapshot all attached EBS volumes ---
+echo ""
+echo "[4/8] Snapshotting attached EBS volumes..."
 
 VOLUME_IDS=$(aws ec2 describe-instances \
   --instance-ids "$INSTANCE_ID" \
   --query 'Reservations[0].Instances[0].BlockDeviceMappings[*].Ebs.VolumeId' \
   --output text)
 
+SNAPSHOT_IDS=""
 for VOL_ID in $VOLUME_IDS; do
   SNAP_ID=$(aws ec2 create-snapshot \
     --volume-id "$VOL_ID" \
@@ -108,11 +140,12 @@ for VOL_ID in $VOLUME_IDS; do
     --query 'SnapshotId' \
     --output text)
   echo "      $VOL_ID -> $SNAP_ID"
+  SNAPSHOT_IDS="${SNAPSHOT_IDS}${SNAP_ID} "
 done
 
-# --- Step 4: Create forensic security group and swap ---
+# --- Step 5: Create forensic security group ---
 echo ""
-echo "[4/5] Creating forensic security group and isolating..."
+echo "[5/8] Creating forensic security group..."
 
 FORENSIC_SG_NAME="forensic-isolation-${INSTANCE_ID}"
 
@@ -148,6 +181,10 @@ else
   echo "      Created forensic SG: $FORENSIC_SG_ID"
 fi
 
+# --- Step 6: Swap security groups ---
+echo ""
+echo "[6/8] Isolating instance (swapping security groups)..."
+
 # Record original security groups before swapping
 ORIGINAL_SGS=$(aws ec2 describe-instances \
   --instance-ids "$INSTANCE_ID" \
@@ -168,15 +205,37 @@ aws ec2 modify-instance-attribute \
 
 echo "      Swapped to forensic SG (SSH from $FORENSIC_IP only, no egress)"
 
-# --- Step 5: Enable termination protection ---
+# --- Step 7: Enable termination protection ---
 echo ""
-echo "[5/5] Enabling termination protection..."
+echo "[7/8] Enabling termination protection..."
 
 aws ec2 modify-instance-attribute \
   --instance-id "$INSTANCE_ID" \
   --disable-api-termination
 
 echo "      Termination protection enabled"
+
+# --- Step 8: Generate forensic report ---
+echo ""
+echo "[8/8] Generating forensic report..."
+
+REPORT_FILE="forensic-report-${INSTANCE_ID}-$(date -u +%Y%m%d%H%M%S).json"
+
+cat > "$REPORT_FILE" <<REPORT
+{
+  "instance_id": "$INSTANCE_ID",
+  "isolated_at": "$TIMESTAMP",
+  "forensic_ip": "$FORENSIC_IP",
+  "forensic_sg": "$FORENSIC_SG_ID",
+  "original_security_groups": "$(echo $ORIGINAL_SGS | tr ' ' ',')",
+  "detached_iam_profile": "$INSTANCE_PROFILE",
+  "vpc_id": "$VPC_ID",
+  "subnet_id": "$SUBNET_ID",
+  "ebs_snapshots": "$(echo $SNAPSHOT_IDS | xargs | tr ' ' ',')"
+}
+REPORT
+
+echo "      Report saved: $REPORT_FILE"
 
 # --- Summary ---
 echo ""
@@ -188,8 +247,10 @@ echo "  Status:          ISOLATED"
 echo "  Forensic SG:     $FORENSIC_SG_ID"
 echo "  SSH Access:      $FORENSIC_IP -> port 22"
 echo "  Egress:          BLOCKED"
+echo "  IAM Role:        DETACHED"
 echo "  EBS Snapshots:   Created for all volumes"
 echo "  Termination:     Protected"
+echo "  Report:          $REPORT_FILE"
 echo ""
 echo "  Original SGs saved in tag: OriginalSecurityGroups"
 echo ""
