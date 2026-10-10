@@ -1,20 +1,23 @@
-# EC2 Forensic Isolation
+# AWS Incident Response Scripts
 
-This script isolates a compromised EC2 instance for forensic investigation. Given an instance ID, it tags the instance, detaches its IAM role, snapshots all EBS volumes, swaps its security groups to allow only SSH from your IP with no egress, enables termination protection, and outputs a JSON forensic report.
+Automated scripts for AWS security incident response. Each directory is a self-contained script with its own README.
 
-## Usage
+## Scripts
 
-```bash
-./isolate-instance.sh <instance-id> [--forensic-ip <your-ip>]
+| Script | Description |
+|--------|-------------|
+| [EC2 Forensic Isolation](ec2-forensic-isolation/) | Isolates a compromised EC2 instance — tags, snapshots EBS, detaches IAM role, locks down security groups, enables termination protection |
 
-## Runbooks
+## Repository Structure
 
-| Runbook | Description |
-|---------|-------------|
-| [EC2 Forensic Isolation](ec2-forensic-isolation/) | Isolate a compromised EC2 instance: snapshot volumes, swap to a forensic-only security group, block egress, enable termination protection |
+aws-incident-response-scripts/
+├── ec2-forensic-isolation/
+│ ├── isolate-instance.sh
+│ └── README.md
+└── README.md
+
 
 ## Prerequisites
 
 - AWS CLI configured with appropriate credentials
 - Bash 4+
-- `curl` (for auto-detecting public IP)
