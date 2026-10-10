@@ -10,11 +10,13 @@ Automated scripts for AWS security incident response. Each directory is a self-c
 
 ## Repository Structure
 
-- `aws-incident-response-scripts/`
-  - `ec2-forensic-isolation/`
-    - `isolate-instance.sh`
-    - `README.md`
-  - `README.md`
+```
+aws-incident-response-scripts/
+├── ec2-forensic-isolation/
+│   ├── isolate-instance.sh
+│   └── README.md
+└── README.md
+```
 
 ## Prerequisites
 
